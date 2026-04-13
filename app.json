@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "talking-tom-test",
+    "slug": "talking-tom-test",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "We need microphone access to record and repeat your voice."
+      },
+      "bundleIdentifier": "com.anonymous.talking-tom-test"
+    },
+    "android": {
+      "permissions": [
+        "RECORD_AUDIO"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "package": "com.anonymous.talkingtomtest"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
