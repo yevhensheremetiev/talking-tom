@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Platform, StyleSheet, Text, View } from "react-native";
+import { Platform, StatusBar, StyleSheet, Text, View } from "react-native";
 import Rive, { Alignment, Fit, useRive, type RiveRef } from "rive-react-native";
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from "expo-av";
 
@@ -47,9 +47,12 @@ const SILENCE_THRESHOLD_DB = -45;
 const VOICE_STREAK_TICKS = 4;
 const SILENCE_MS = 1000;
 const POLL_MS = 80;
-const MAX_RECORDING_MS = 8000;
+const MAX_RECORDING_MS = 30000;
 const NO_METERING_STOP_MS = 2200;
 const PLAYBACK_RATE = 1.25;
+
+const STATUS_BAR_TOP =
+  Platform.OS === "ios" ? 56 : (StatusBar.currentHeight ?? 0) + 12;
 
 function clampDb(metering: unknown): number | null {
   if (typeof metering !== "number" || Number.isNaN(metering)) return null;
@@ -65,8 +68,6 @@ export function RepeaterScreen() {
 
   const [permission, setPermission] = useState<PermissionState>("checking");
   const [uiState, setUiState] = useState<UiState>("idle");
-  const [debug, setDebug] = useState<string>("");
-  const [liveDb, setLiveDb] = useState<number | null>(null);
 
   const permissionRef = useRef<PermissionState>("checking");
   const uiStateRef = useRef<UiState>("idle");
@@ -109,6 +110,31 @@ export function RepeaterScreen() {
     }
   }, []);
 
+  /** iOS: `allowsRecordingIOS: true` routes playback to the earpiece; turn it off while playing. */
+  const setRecordingAudioMode = useCallback(async () => {
+    await Audio.setAudioModeAsync({
+      allowsRecordingIOS: true,
+      playsInSilentModeIOS: true,
+      interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+      interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+      shouldDuckAndroid: true,
+      playThroughEarpieceAndroid: false,
+      staysActiveInBackground: false,
+    });
+  }, []);
+
+  const setPlaybackAudioMode = useCallback(async () => {
+    await Audio.setAudioModeAsync({
+      allowsRecordingIOS: false,
+      playsInSilentModeIOS: true,
+      interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+      interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+      shouldDuckAndroid: true,
+      playThroughEarpieceAndroid: false,
+      staysActiveInBackground: false,
+    });
+  }, []);
+
   const stopRecordingIfAny = useCallback(async (): Promise<string | null> => {
     const rec = recordingRef.current;
     recordingRef.current = null;
@@ -121,9 +147,8 @@ export function RepeaterScreen() {
     try {
       await rec.stopAndUnloadAsync();
       return rec.getURI() ?? null;
-    } catch (e) {
+    } catch {
       setUiState("error");
-      setDebug(String(e));
       return null;
     }
   }, []);
@@ -133,24 +158,32 @@ export function RepeaterScreen() {
       setUiState("playing");
       await unloadSound();
 
-      const { sound } = await Audio.Sound.createAsync(
-        { uri },
-        { shouldPlay: true, rate: PLAYBACK_RATE, shouldCorrectPitch: false },
-      );
-      soundRef.current = sound;
-
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (!status.isLoaded) return;
-        if (status.didJustFinish) {
-          unloadSound().finally(() => setUiState("idle"));
-        }
-      });
-
       try {
-        await sound.setRateAsync(PLAYBACK_RATE, false);
-      } catch {}
+        await setPlaybackAudioMode();
+        const { sound } = await Audio.Sound.createAsync(
+          { uri },
+          { shouldPlay: true, rate: PLAYBACK_RATE, shouldCorrectPitch: false },
+        );
+        soundRef.current = sound;
+
+        sound.setOnPlaybackStatusUpdate((status) => {
+          if (!status.isLoaded) return;
+          if (status.didJustFinish) {
+            unloadSound()
+              .finally(() => setRecordingAudioMode())
+              .finally(() => setUiState("idle"));
+          }
+        });
+
+        try {
+          await sound.setRateAsync(PLAYBACK_RATE, false);
+        } catch {}
+      } catch {
+        await setRecordingAudioMode();
+        setUiState("idle");
+      }
     },
-    [unloadSound],
+    [setPlaybackAudioMode, setRecordingAudioMode, unloadSound],
   );
 
   const ensurePermission = useCallback(async () => {
@@ -169,18 +202,6 @@ export function RepeaterScreen() {
 
     setPermission("denied");
     return false;
-  }, []);
-
-  const prepareAudioMode = useCallback(async () => {
-    await Audio.setAudioModeAsync({
-      allowsRecordingIOS: true,
-      playsInSilentModeIOS: true,
-      interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-      interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-      shouldDuckAndroid: true,
-      playThroughEarpieceAndroid: false,
-      staysActiveInBackground: false,
-    });
   }, []);
 
   useEffect(() => {
@@ -210,7 +231,6 @@ export function RepeaterScreen() {
         voiceStreakRef.current = 0;
         setRecordingVoiceConfirmed(false);
         startedAtRef.current = msNow();
-        setLiveDb(null);
         return;
       }
 
@@ -231,7 +251,6 @@ export function RepeaterScreen() {
 
       const db = clampDb((status as any).metering);
       if (db == null) {
-        setLiveDb(null);
         if (startedAt != null && msNow() - startedAt >= NO_METERING_STOP_MS) {
           setUiState("processing");
           const uri = await stopRecordingIfAny();
@@ -240,7 +259,6 @@ export function RepeaterScreen() {
         }
         return;
       }
-      setLiveDb(db);
 
       const isVoice = db > START_THRESHOLD_DB;
       const isSilence = db < SILENCE_THRESHOLD_DB;
@@ -278,9 +296,8 @@ export function RepeaterScreen() {
         if (uri) await playUri(uri);
         else setUiState("idle");
       }
-    } catch (e) {
+    } catch {
       setUiState("error");
-      setDebug(String(e));
       await stopRecordingIfAny();
       await unloadSound();
     } finally {
@@ -292,16 +309,15 @@ export function RepeaterScreen() {
     let mounted = true;
     (async () => {
       try {
-        await prepareAudioMode();
+        await setRecordingAudioMode();
         const ok = await ensurePermission();
         if (!mounted) return;
         if (!ok) return;
 
         clearPolling();
         pollingTimerRef.current = setInterval(pollOnce, POLL_MS);
-      } catch (e) {
+      } catch {
         setUiState("error");
-        setDebug(String(e));
       }
     })();
     return () => {
@@ -314,7 +330,7 @@ export function RepeaterScreen() {
     clearPolling,
     ensurePermission,
     pollOnce,
-    prepareAudioMode,
+    setRecordingAudioMode,
     stopRecordingIfAny,
     unloadSound,
   ]);
@@ -338,26 +354,30 @@ export function RepeaterScreen() {
     applyCharacterMode(riveRef, characterMode);
   }, [riveRef, characterMode]);
 
-  const subtitle = useMemo(() => {
-    if (permission === "checking") return "Checking microphone permission…";
-    if (permission === "denied")
-      return "Microphone permission denied. Enable it in Settings.";
-    switch (uiState) {
+  const statusLabel = useMemo(() => {
+    if (permission !== "granted") return null;
+    switch (characterMode) {
       case "idle":
-        return "Say something…";
-      case "recording":
-        return "Listening…";
+        return "Waiting for you to talk";
+      case "hear":
       case "processing":
-        return "Thinking…";
-      case "playing":
-        return "Repeating…";
+        return "Listening";
+      case "talk":
+        return "Repeating";
       case "error":
-        return "Something went wrong.";
+        return null;
+      default:
+        return null;
     }
-  }, [permission, uiState]);
+  }, [characterMode, permission]);
 
   return (
     <View style={styles.container}>
+      <View style={[styles.statusBar, { paddingTop: STATUS_BAR_TOP }]}>
+        {statusLabel ? (
+          <Text style={styles.statusText}>{statusLabel}</Text>
+        ) : null}
+      </View>
       <View style={styles.riveWrap}>
         <Rive
           ref={setRiveRef}
@@ -367,26 +387,10 @@ export function RepeaterScreen() {
           fit={Fit.Contain}
           alignment={Alignment.Center}
           style={styles.rive}
-          onError={(e) => {
+          onError={() => {
             setUiState("error");
-            setDebug(JSON.stringify(e));
           }}
         />
-      </View>
-
-      <View style={styles.hud}>
-        <Text style={styles.title}>Talking Tom (test)</Text>
-        <Text style={styles.subtitle}>{subtitle}</Text>
-        {permission === "granted" && uiState === "recording" ? (
-          <Text style={styles.meter}>
-            dB: {liveDb == null ? "…" : liveDb.toFixed(1)}
-          </Text>
-        ) : null}
-        {uiState === "error" && debug ? (
-          <Text style={styles.debug} selectable>
-            {Platform.OS}: {debug}
-          </Text>
-        ) : null}
       </View>
     </View>
   );
@@ -397,6 +401,20 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#0b1020",
   },
+  statusBar: {
+    minHeight: 24,
+    paddingHorizontal: 20,
+    paddingBottom: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  statusText: {
+    color: "rgba(255,255,255,0.88)",
+    fontSize: 15,
+    fontWeight: "500",
+    letterSpacing: 0.2,
+    textAlign: "center",
+  },
   riveWrap: {
     flex: 1,
     justifyContent: "center",
@@ -406,32 +424,5 @@ const styles = StyleSheet.create({
   rive: {
     width: "100%",
     height: "100%",
-  },
-  hud: {
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 24,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "rgba(255,255,255,0.12)",
-  },
-  title: {
-    color: "rgba(255,255,255,0.9)",
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  subtitle: {
-    marginTop: 6,
-    color: "rgba(255,255,255,0.72)",
-    fontSize: 14,
-  },
-  debug: {
-    marginTop: 10,
-    color: "rgba(255,255,255,0.55)",
-    fontSize: 12,
-  },
-  meter: {
-    marginTop: 8,
-    color: "rgba(255,255,255,0.55)",
-    fontSize: 12,
   },
 });

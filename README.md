@@ -1,29 +1,21 @@
-# Talking Tom (Expo + Rive) — test task
+# Talking Tom
 
-## What this app does
-- Shows a Rive character on a single screen.
-- Automatically records when you start speaking and stops after ~1s of silence.
-- Plays your recording back with a **higher pitch**.
-- No backend, no external services.
+Small Expo + React Native app: a Rive character listens, records your voice when you speak, stops after a short silence, and plays it back higher-pitched. No backend.
 
-## Key decisions (and why)
-- **Expo managed**: fastest setup and iteration for a single-screen prototype.
-- **`expo-av` for audio**: provides microphone permission handling + record/playback in one package.
-- **Pitch**: implemented via playback rate (`rate > 1`) with `shouldCorrectPitch = false` which makes the voice sound higher (trade-off: playback is also slightly faster).
-- **Voice/silence detection**: uses recording **metering (dB)** with simple thresholds and a silence timer.
+**Choices:** Expo for a fast single-screen prototype and straightforward native permissions. `expo-av` handles mic access, recording, and playback in one place. Rive drives the character. Voice start/stop uses the recorder’s **dB metering** with simple thresholds instead of a separate VAD library. A **higher pitch** comes from a slightly faster playback rate with pitch correction disabled—quick to ship, at the cost of the clip sounding a bit sped up.
 
-## Setup
-1. Replace the placeholder file `assets/character.riv` with the real `.riv` from the task link (your file from Downloads).
-2. Install and run:
+### Recording and playback limits
+
+These values are constants in code; adjust them there if you need different behavior.
+
+- **Maximum one take:** **30 seconds** (`MAX_RECORDING_MS`). After that, recording stops and whatever was captured is played back (or the flow returns to idle if there is no usable file).
+- **End of phrase:** once the app has detected speech, **~1 second** of silence (`SILENCE_MS`) below the silence threshold ends the clip early, so normal sentences usually finish well under 30 seconds.
+- **No speech:** if no confirmed voice within **~1 second** from the start of a take, recording is discarded and the app goes back to waiting.
+- **Missing metering:** if level metering is unavailable for **~2.2 seconds** (`NO_METERING_STOP_MS`), recording stops and playback is attempted or the app idles out.
+- **Playback:** the full clip is played at **1.25×** speed (`PLAYBACK_RATE`, pitch correction off), so playback duration is shorter than wall-clock recording time.
 
 ```bash
 npm install
 npm run ios
-# or
-npm run android
+npm start
 ```
-
-## Notes / limitations
-- Metering values and thresholds can vary across devices; tweak `START_THRESHOLD_DB` / `SILENCE_THRESHOLD_DB` in `src/screens/RepeaterScreen.tsx`.
-- If you need true pitch-shift without changing speed, the next step would be moving to `expo prebuild` and using a dedicated DSP solution.
-
